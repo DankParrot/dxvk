@@ -289,28 +289,47 @@ namespace dxvk {
 
       if (pRenderTarget != NULL) {
         D3D8Surface* surf = static_cast<D3D8Surface*>(pRenderTarget);
+        m_renderTarget = surf;
         res = GetD3D9()->SetRenderTarget(0, surf != nullptr ? surf->GetD3D9() : nullptr); // use RT index 0
         if (res != D3D_OK) return res;
       }
 
       // SetDepthStencilSurface is a separate call
       D3D8Surface* zStencil = static_cast<D3D8Surface*>(pNewZStencil);
+      m_depthStencil = zStencil;
       res = GetD3D9()->SetDepthStencilSurface(zStencil != nullptr ? zStencil->GetD3D9() : nullptr);
 
       return res;
     }
 
     HRESULT STDMETHODCALLTYPE GetRenderTarget(IDirect3DSurface8** ppRenderTarget) {
+
       Com<d3d9::IDirect3DSurface9> pRT9 = nullptr;
       HRESULT res = GetD3D9()->GetRenderTarget(0, &pRT9); // use RT index 0
-      *ppRenderTarget = ref(new D3D8Surface(this, std::move(pRT9)));
+
+      Com<IDirect3DSurface8> pRT8 = D3D8Surface::LookupAddress(pRT9.ptr());
+      
+      if (unlikely(pRT8 == nullptr)) {
+        *ppRenderTarget = ref(new D3D8Surface(this, std::move(pRT9)));
+        return res;
+      }
+      
+      *ppRenderTarget = pRT8.ref();
       return res;
     }
 
     HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface8** ppZStencilSurface) {
       Com<d3d9::IDirect3DSurface9> pStencil9 = nullptr;
       HRESULT res = GetD3D9()->GetDepthStencilSurface(&pStencil9);
-      *ppZStencilSurface = ref(new D3D8Surface(this, std::move(pStencil9)));
+
+      Com<IDirect3DSurface8> pStencil8 = D3D8Surface::LookupAddress(pStencil9.ptr());
+
+      if (unlikely(pRT8 == nullptr)) {
+        *ppZStencilSurface = ref(new D3D8Surface(this, std::move(pStencil9)));
+        return res;
+      }
+
+      *ppZStencilSurface = pStencil8.ref();
       return res;
     }
 
@@ -420,10 +439,28 @@ namespace dxvk {
     }
 
     HRESULT STDMETHODCALLTYPE GetClipStatus(D3DCLIPSTATUS8* pClipStatus) {
-      return GetD3D9()->GetClipStatus(reinterpret_cast<d3d9::D3DCLIPSTATUS9*>(pClipStatus));
+      return GetD3D9()->SetClipStatus(reinterpret_cast<const d3d9::D3DCLIPSTATUS9*>(pClipStatus));
     }
 
-    HRESULT STDMETHODCALLTYPE GetTexture D3D8_DEVICE_STUB_(GetTexture, DWORD Stage, IDirect3DBaseTexture8** ppTexture);
+    HRESULT STDMETHODCALLTYPE GetTexture(DWORD Stage, IDirect3DBaseTexture8** ppTexture) {
+      d3d9::IDirect3DBaseTexture9* pTexture;
+      HRESULT res = GetD3D9()->GetTexture(Stage, &pTexture);
+
+      if (unlikely(FAILED(res) || !pTexture)) return res;
+
+      switch (pTexture->GetType()) {
+        case d3d9::D3DRTYPE_TEXTURE:
+          *ppTexture = D3D8Texture2D::LookupAddress(static_cast<d3d9::IDirect3DTexture9*>(pTexture));
+          return res;
+        case d3d9::D3DRTYPE_CUBETEXTURE:
+          *ppTexture = D3D8TextureCube::LookupAddress(static_cast<d3d9::IDirect3DCubeTexture9*>(pTexture));
+          return res;
+        case d3d9::D3DRTYPE_VOLUMETEXTURE:
+          // TODO: GetTexture lookup volume texture
+          return res;
+      }
+      return res;
+    }
 
     HRESULT STDMETHODCALLTYPE SetTexture(DWORD Stage, IDirect3DBaseTexture8* pTexture) {
       D3D8Texture2D* tex = static_cast<D3D8Texture2D*>(pTexture);
@@ -632,6 +669,8 @@ namespace dxvk {
     INT                   m_BaseVertexIndex = 0;
 
     Com<D3D8InterfaceEx>  m_parent;
+    Com<D3D8Surface>      m_renderTarget;
+    Com<D3D8Surface>      m_depthStencil;
 
     std::vector<D3D8ShaderInfo>  m_shaders;
     DWORD                        m_currentVertexShader  = 0;  // can be m_shaders index or FVF
